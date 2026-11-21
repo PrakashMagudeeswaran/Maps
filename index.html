@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keypad Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  html, body { margin: 0; height: 100%; font-family: Arial, sans-serif; background: #fff; overflow: hidden; }
+  #map { position: absolute; inset: 0 0 52px 0; }
+  .leaflet-control-container { display: none; }
+  #cross { position: absolute; left: 50%; top: calc(50% - 26px); width: 22px; height: 22px; margin: -11px 0 0 -11px; z-index: 500; pointer-events: none; }
+  #cross:before, #cross:after { content: ""; position: absolute; background: #d00; }
+  #cross:before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #cross:after { top: 10px; left: 0; height: 2px; width: 22px; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; background: #111; color: #fff; font-size: 12px; line-height: 14px; padding: 4px 6px; box-sizing: border-box; z-index: 600; }
+  #bar b { color: #ffd54a; }
+  #search { position: absolute; inset: 0; background: #fff; z-index: 800; display: none; padding: 8px; box-sizing: border-box; }
+  #q { width: 100%; font-size: 18px; padding: 6px; box-sizing: border-box; border: 2px solid #111; }
+  #res { margin: 8px 0 0; padding: 0; list-style: none; font-size: 15px; }
+  #res li { padding: 6px; border-bottom: 1px solid #ccc; }
+  #res li.on { background: #111; color: #fff; }
+  #hint { font-size: 12px; color: #444; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="cross"></div>
+<div id="bar"></div>
+<div id="search">
+  <input id="q" type="text" placeholder="Type a place, press OK">
+  <div id="hint">OK = search. Up/Down = pick. OK on empty = close.</div>
+  <ul id="res"></ul>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+// Starting view. Change these numbers to your own area (latitude, longitude, zoom).
+var START = [20.59, 78.96, 5];
+
+var map = L.map('map', { zoomControl: false, attributionControl: false, keyboard: false })
+  .setView([START[0], START[1]], START[2]);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+
+var bar = document.getElementById('bar');
+var searchBox = document.getElementById('search');
+var q = document.getElementById('q');
+var resList = document.getElementById('res');
+var A = null, B = null, mA = null, mB = null, line = null;
+var results = [], sel = 0, searching = false, routeText = '';
+
+function say(t) { bar.innerHTML = t; }
+function home() {
+  say('<b>0</b> search <b>7</b> start <b>9</b> end <b>8</b> route<br><b>1</b> zoom- <b>3</b> zoom+ <b>5</b> clear' + (routeText ? '<br>' + routeText : ''));
+}
+home();
+
+function pin(ll, label) {
+  return L.marker(ll, { icon: L.divIcon({ html: '<div style="background:#d00;color:#fff;font:bold 12px Arial;width:18px;height:18px;border-radius:9px;text-align:center;line-height:18px">' + label + '</div>', className: '', iconSize: [18, 18] }) }).addTo(map);
+}
+
+function openSearch() {
+  searching = true; searchBox.style.display = 'block';
+  q.value = ''; resList.innerHTML = ''; results = []; q.focus();
+}
+function closeSearch() {
+  searching = false; searchBox.style.display = 'none'; q.blur(); home();
+}
+function draw() {
+  resList.innerHTML = '';
+  results.forEach(function (r, i) {
+    var li = document.createElement('li');
+    li.textContent = r.display_name.split(',').slice(0, 3).join(',');
+    if (i === sel) li.className = 'on';
+    resList.appendChild(li);
+  });
+}
+function doSearch() {
+  var text = q.value.trim();
+  if (!text) { closeSearch(); return; }
+  resList.innerHTML = '<li>Searching...</li>';
+  fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(text))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      results = d; sel = 0;
+      if (!d.length) { resList.innerHTML = '<li>Nothing found</li>'; return; }
+      draw(); q.blur();
+    })
+    .catch(function () { resList.innerHTML = '<li>Search failed. Check internet.</li>'; });
+}
+function pickResult() {
+  var r = results[sel];
+  map.setView([parseFloat(r.lat), parseFloat(r.lon)], 15);
+  closeSearch();
+}
+
+function route() {
+  if (!A || !B) { say('Set start with <b>7</b> and end with <b>9</b> first'); return; }
+  say('Finding route...');
+  var url = 'https://router.project-osrm.org/route/v1/driving/' + A.lng + ',' + A.lat + ';' + B.lng + ',' + B.lat + '?overview=full&geometries=geojson';
+  fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.routes || !d.routes.length) { say('No route found'); return; }
+    var rt = d.routes[0];
+    if (line) map.removeLayer(line);
+    line = L.geoJSON(rt.geometry, { style: { color: '#0050ff', weight: 5 } }).addTo(map);
+    map.fitBounds(line.getBounds());
+    var km = (rt.distance / 1000).toFixed(1), mins = Math.round(rt.duration / 60);
+    routeText = 'Car: <b>' + km + ' km</b>, about <b>' + (mins >= 60 ? Math.floor(mins / 60) + ' h ' + (mins % 60) + ' min' : mins + ' min') + '</b>';
+    home();
+  }).catch(function () { say('Route failed. Check internet.'); });
+}
+function clearAll() {
+  [mA, mB, line].forEach(function (l) { if (l) map.removeLayer(l); });
+  A = B = mA = mB = line = null; routeText = ''; home();
+}
+
+document.addEventListener('keydown', function (e) {
+  var k = e.key;
+  if (searching) {
+    if (k === 'Enter') { e.preventDefault(); if (results.length && document.activeElement !== q) pickResult(); else doSearch(); }
+    else if (k === 'ArrowDown' && results.length) { e.preventDefault(); sel = (sel + 1) % results.length; draw(); }
+    else if (k === 'ArrowUp' && results.length) { e.preventDefault(); sel = (sel - 1 + results.length) % results.length; draw(); }
+    return;
+  }
+  var step = 80;
+  if (k === 'ArrowUp') map.panBy([0, -step]);
+  else if (k === 'ArrowDown') map.panBy([0, step]);
+  else if (k === 'ArrowLeft') map.panBy([-step, 0]);
+  else if (k === 'ArrowRight') map.panBy([step, 0]);
+  else if (k === '3' || k === 'Enter') map.zoomIn();
+  else if (k === '1') map.zoomOut();
+  else if (k === '0') { e.preventDefault(); openSearch(); }
+  else if (k === '7') { A = map.getCenter(); if (mA) map.removeLayer(mA); mA = pin(A, 'A'); say('Start set (A)'); }
+  else if (k === '9') { B = map.getCenter(); if (mB) map.removeLayer(mB); mB = pin(B, 'B'); say('End set (B)'); }
+  else if (k === '8') route();
+  else if (k === '5') clearAll();
+});
+</script>
+</body>
+</html>
